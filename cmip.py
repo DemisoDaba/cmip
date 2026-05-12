@@ -57,27 +57,44 @@ folium.Rectangle(
 st_folium(m, width=700, height=400)
 
 # =========================
-# LOAD DATA
+# LOAD DATA (FIXED)
 # =========================
 @st.cache_data
 def load_data():
     file_path = download_file()
 
-    # ✅ FIXED: proper CMIP6 time decoding
+    # FIX TIME DECODING
     ds = xr.open_dataset(file_path, decode_times=True, use_cftime=True)
 
     da = ds["mrso"]
 
+    # =========================
+    # FIX LONGITUDE (0–360 → -180–180)
+    # =========================
+    if da.lon.max() > 180:
+        da = da.assign_coords(lon=(((da.lon + 180) % 360) - 180))
+        da = da.sortby("lon")
+
+    # =========================
+    # FIX LAT ORDER
+    # =========================
+    if da.lat[0] > da.lat[-1]:
+        da = da.sortby("lat")
+
+    # =========================
+    # SUBSET REGION
+    # =========================
     da = da.sel(
         lon=slice(min_lon, max_lon),
         lat=slice(min_lat, max_lat)
     )
 
+    # spatial mean
     da = da.mean(dim=["lat", "lon"])
 
     df = da.to_dataframe().reset_index()
 
-    # ensure proper datetime
+    # clean time
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
 
@@ -93,7 +110,7 @@ if st.button("🚀 Load Soil Moisture %"):
     df = load_data()
 
     # =========================
-    # FIX TIME ORDER (IMPORTANT)
+    # SORT TIME (IMPORTANT)
     # =========================
     df = df.sort_values("time")
 
@@ -112,7 +129,7 @@ if st.button("🚀 Load Soil Moisture %"):
     ) / df["soil_moisture_pct"].std()
 
     # =========================
-    # TIME INDEX FOR PERFECT X-AXIS
+    # TIME AS INDEX (KEY FIX)
     # =========================
     df = df.set_index("time")
 
@@ -126,7 +143,7 @@ if st.button("🚀 Load Soil Moisture %"):
     col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
-    # TIME SERIES PLOTS (FIXED)
+    # TIME SERIES PLOTS (FIXED X-AXIS)
     # =========================
     st.subheader("🌱 Soil Moisture (%)")
     st.line_chart(df["soil_moisture_pct"])
@@ -138,7 +155,7 @@ if st.button("🚀 Load Soil Moisture %"):
     st.line_chart(df["index"])
 
     # =========================
-    # DATA
+    # DATA VIEW
     # =========================
     st.subheader("📋 Data")
     st.dataframe(df.reset_index())
