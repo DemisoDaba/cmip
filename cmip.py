@@ -41,7 +41,7 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# MAP (OPTIONAL)
+# MAP
 # =========================
 st.subheader("🗺️ Region")
 
@@ -67,15 +67,20 @@ def load_data():
 
     da = ds["mrso"]
 
-    da = da.sel(lon=slice(min_lon, max_lon),
-                lat=slice(min_lat, max_lat))
+    da = da.sel(
+        lon=slice(min_lon, max_lon),
+        lat=slice(min_lat, max_lat)
+    )
 
     da = da.mean(dim=["lat", "lon"])
 
     df = da.to_dataframe().reset_index()
 
-    # ✅ FIXED TIME HANDLING ONLY
+    # =========================
+    # ✅ FIXED TIME (clean + valid)
+    # =========================
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time"])
 
     return df
 
@@ -88,25 +93,29 @@ if st.button("🚀 Load Soil Moisture %"):
 
     df = load_data()
 
-    # clean time
-    df = df.dropna()
-    df = df.dropna(subset=["time"])
+    # =========================
+    # CLEAN + SORT TIME (IMPORTANT)
+    # =========================
+    df = df.sort_values("time")
 
     # =========================
-    # 🔥 NORMALIZATION TO %
+    # NORMALIZATION
     # =========================
     vmin = df["mrso"].min()
     vmax = df["mrso"].max()
 
     df["soil_moisture_pct"] = (df["mrso"] - vmin) / (vmax - vmin) * 100
 
-    # anomaly
     df["anomaly"] = df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
 
-    # index
     df["index"] = (
         df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
     ) / df["soil_moisture_pct"].std()
+
+    # =========================
+    # INDEX TIME FOR PERFECT X-AXIS
+    # =========================
+    df = df.set_index("time")
 
     # =========================
     # METRICS
@@ -118,16 +127,19 @@ if st.button("🚀 Load Soil Moisture %"):
     col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
-    # PLOTS
+    # PERFECT TIME SERIES PLOTS
     # =========================
     st.subheader("🌱 Soil Moisture (%)")
-    st.line_chart(df.set_index("time")["soil_moisture_pct"])
+    st.line_chart(df["soil_moisture_pct"])
 
     st.subheader("📉 Anomaly (%)")
-    st.line_chart(df.set_index("time")["anomaly"])
+    st.line_chart(df["anomaly"])
 
     st.subheader("📊 Standardized Index")
-    st.line_chart(df.set_index("time")["index"])
+    st.line_chart(df["index"])
 
+    # =========================
+    # DATA
+    # =========================
     st.subheader("📋 Data")
-    st.dataframe(df)
+    st.dataframe(df.reset_index())
