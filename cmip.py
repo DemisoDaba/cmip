@@ -1,16 +1,20 @@
 import streamlit as st
+import requests
 import xarray as xr
 import numpy as np
 import pandas as pd
-import requests
 
-st.set_page_config(page_title="CMIP6 Ethiopia Tool", layout="wide")
-st.title("🌍 CMIP6 Ethiopia Climate Analysis Tool (Stable + Fixed)")
+st.set_page_config(page_title="CMIP6 Ethiopia Soil Moisture Tool", layout="wide")
+
+st.title("🌍 CMIP6 Ethiopia Soil Moisture Analysis (mrso)")
 
 # =====================================================
-# 1. INPUTS (ONE VARIABLE ONLY)
+# 1. INPUTS
 # =====================================================
-variable = st.sidebar.selectbox("Variable", ["pr", "tasmax", "tasmin"])
+st.sidebar.header("🧠 Configuration")
+
+# ONLY SOIL MOISTURE NOW
+variable = "mrso"
 experiment = st.sidebar.selectbox("Experiment", ["historical", "ssp245", "ssp585"])
 
 # =====================================================
@@ -18,8 +22,8 @@ experiment = st.sidebar.selectbox("Experiment", ["historical", "ssp245", "ssp585
 # =====================================================
 st.sidebar.header("📅 Time Range")
 
-start_year = st.sidebar.number_input("Start Year", 1990)
-end_year = st.sidebar.number_input("End Year", 2000)
+start_year = st.sidebar.number_input("Start Year", value=1990)
+end_year = st.sidebar.number_input("End Year", value=2000)
 
 start_date = f"{start_year}-01-01"
 end_date = f"{end_year}-12-31"
@@ -27,69 +31,67 @@ end_date = f"{end_year}-12-31"
 # =====================================================
 # 3. ETHIOPIA BOUNDING BOX
 # =====================================================
-st.sidebar.header("📍 Ethiopia Region")
+st.sidebar.header("📍 Region (Ethiopia)")
 
-min_lon = st.sidebar.number_input("Min Lon", 33.0)
-max_lon = st.sidebar.number_input("Max Lon", 48.0)
-min_lat = st.sidebar.number_input("Min Lat", 3.0)
-max_lat = st.sidebar.number_input("Max Lat", 15.0)
+min_lon = st.sidebar.number_input("Min Lon", value=33.0)
+max_lon = st.sidebar.number_input("Max Lon", value=48.0)
+min_lat = st.sidebar.number_input("Min Lat", value=3.0)
+max_lat = st.sidebar.number_input("Max Lat", value=15.0)
 
 # =====================================================
-# 4. FIXED CMIP6 URL
+# 4. SAFE SOIL MOISTURE URL
 # =====================================================
-def get_url(variable, experiment):
-    base = "http://esgf-data.dkrz.de/thredds/dodsC/CMIP6/CMIP/MPI-M/MPI-ESM1-2-LR"
+def get_cmip_url(experiment):
+
+    base = "http://noresg.nird.sigma2.no/thredds/fileServer/esg_dataroot/cmor/CMIP6"
 
     return (
-        f"{base}/{experiment}/r1i1p1f1/day/"
-        f"{variable}/gn/v20190710/"
-        f"{variable}_day_MPI-ESM1-2-LR_{experiment}_r1i1p1f1_gn_18500101-18691231.nc"
+        f"{base}/ScenarioMIP/NCC/NorESM2-MM/{experiment}/r2i1p1f1/day/"
+        f"mrso/gn/v20200702/"
+        f"mrso_day_NorESM2-MM_{experiment}_r2i1p1f1_gn_20141231-20201231.nc"
     )
 
 # =====================================================
-# 5. SAFE DATA LOADER (IMPORTANT FIX)
+# 5. SAFE LOADER
 # =====================================================
 @st.cache_data
-def load_data(url, var):
+def load_data(url):
 
-    engines = ["netcdf4", "h5netcdf", None]
+    try:
+        ds = xr.open_dataset(url)
 
-    for eng in engines:
-        try:
-            ds = xr.open_dataset(url, engine=eng)
+        data = ds["mrso"]
 
-            data = ds[var]
+        # subset Ethiopia
+        data = data.sel(
+            lon=slice(min_lon, max_lon),
+            lat=slice(min_lat, max_lat)
+        )
 
-            # subset Ethiopia
-            data = data.sel(
-                lon=slice(min_lon, max_lon),
-                lat=slice(min_lat, max_lat)
-            )
+        # spatial average → time series
+        data = data.mean(dim=["lat", "lon"])
 
-            data = data.mean(dim=["lat", "lon"])
+        df = data.to_dataframe().reset_index()
 
-            df = data.to_dataframe().reset_index()
+        return df
 
-            return df
-
-        except Exception:
-            continue
-
-    st.error("❌ Failed to open dataset with all engines (netcdf4/h5netcdf)")
-    return None
+    except Exception as e:
+        st.error("❌ Failed to load soil moisture dataset")
+        st.code(str(e))
+        return None
 
 # =====================================================
 # 6. RUN
 # =====================================================
-if st.button("🚀 Run CMIP6 Analysis"):
+if st.button("🚀 Run Soil Moisture Analysis"):
 
-    st.info("🔍 Loading CMIP6 dataset...")
+    st.info("🔍 Loading CMIP6 soil moisture (mrso)...")
 
-    url = get_url(variable, experiment)
+    url = get_cmip_url(experiment)
 
     st.code(url)
 
-    df = load_data(url, variable)
+    df = load_data(url)
 
     if df is None:
         st.stop()
@@ -103,29 +105,34 @@ if st.button("🚀 Run CMIP6 Analysis"):
     df = df[(df[time_col] >= start_date) & (df[time_col] <= end_date)]
 
     # =================================================
-    # PHYSICS
+    # UNIT (optional normalization)
     # =================================================
-    if variable == "pr":
-        df["value"] = df[variable] * 86400
-    else:
-        df["value"] = df[variable] - 273.15
+    df["soil_moisture"] = df["mrso"]
 
     # =================================================
-    # SPI
+    # ANOMALY (IMPORTANT FOR DROUGHT)
     # =================================================
-    df["SPI"] = (df[variable] - df[variable].mean()) / df[variable].std()
+    df["anomaly"] = df["mrso"] - df["mrso"].mean()
+
+    df["SPI_like"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
 
     # =================================================
-    # PLOTS
+    # VISUALIZATION
     # =================================================
-    st.subheader("📈 Time Series")
-    st.line_chart(df.set_index(time_col)["value"])
+    st.subheader("🌱 Soil Moisture Time Series (mrso)")
+    st.line_chart(df.set_index(time_col)["soil_moisture"])
 
-    st.subheader("📉 SPI Index")
-    st.line_chart(df.set_index(time_col)["SPI"])
+    st.subheader("📉 Soil Moisture Anomaly")
+    st.line_chart(df.set_index(time_col)["anomaly"])
 
-    st.subheader("📊 Data Table")
+    st.subheader("📊 Standardized Index (SPI-like)")
+    st.line_chart(df.set_index(time_col)["SPI_like"])
+
+    st.subheader("📋 Data Table")
     st.dataframe(df)
 
+# =====================================================
+# FOOTER
+# =====================================================
 st.markdown("---")
-st.markdown("🌍 CMIP6 Ethiopia Tool | Stable OpenDAP Engine Fallback Version")
+st.markdown("🌍 CMIP6 Ethiopia Soil Moisture Tool | mrso-based drought monitoring")
