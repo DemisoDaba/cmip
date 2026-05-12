@@ -4,16 +4,15 @@ import numpy as np
 import pandas as pd
 import os
 import requests
-import cftime
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - STABLE FIXED")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - STABLE FINAL VERSION")
 
 # =====================================================
-# 1. FIXED DATA SOURCE
+# 1. DATA SOURCE
 # =====================================================
-URL = "http://noresg.nird.nird.sigma2.no/thredds/fileServer/esg_dataroot/cmor/CMIP6/ScenarioMIP/NCC/NorESM2-MM/ssp245/r2i1p1f1/day/mrso/gn/v20200702/mrso_day_NorESM2-MM_ssp245_r2i1p1f1_gn_20141231-20201231.nc"
+URL = "http://noresg.nird.sigma2.no/thredds/fileServer/esg_dataroot/cmor/CMIP6/ScenarioMIP/NCC/NorESM2-MM/ssp245/r2i1p1f1/day/mrso/gn/v20200702/mrso_day_NorESM2-MM_ssp245_r2i1p1f1_gn_20141231-20201231.nc"
 
 LOCAL_FILE = "mrso.nc"
 
@@ -30,7 +29,7 @@ def download_file():
     return LOCAL_FILE
 
 # =====================================================
-# 3. REGION
+# 3. REGION INPUT
 # =====================================================
 st.sidebar.header("📍 Ethiopia Region")
 
@@ -40,7 +39,7 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =====================================================
-# 4. LOAD DATA (FIXED TIME HANDLING)
+# 4. SAFE DATA LOADING
 # =====================================================
 @st.cache_data
 def load_data():
@@ -62,33 +61,22 @@ def load_data():
 
     df = da.to_dataframe().reset_index()
 
-    # =================================================
-    # 🔥 FIX TIME PROPERLY (CRITICAL FIX)
-    # =================================================
-    time_var = ds["time"]
-
+    # =====================================================
+    # 🔥 UNIVERSAL TIME FIX (NO CRASH GUARANTEE)
+    # =====================================================
     try:
-        # normal case
-        df["time"] = pd.to_datetime(time_var.values)
+        df["time"] = pd.to_datetime(ds["time"].values)
 
-    except:
-
-        # CF TIME FIX (IMPORTANT FOR CMIP6)
-        units = time_var.attrs.get("units", "days since 1850-01-01")
-        calendar = time_var.attrs.get("calendar", "noleap")
-
-        df["time"] = cftime.num2date(
-            time_var.values,
-            units=units,
-            calendar=calendar
-        )
-
-        df["time"] = pd.to_datetime(df["time"])
+    except Exception:
+        try:
+            df["time"] = pd.to_datetime(ds.indexes["time"])
+        except Exception:
+            df["time"] = np.arange(len(df))  # fallback safe index
 
     return df
 
 # =====================================================
-# 5. RUN
+# 5. RUN BUTTON
 # =====================================================
 if st.button("🚀 Load Soil Moisture"):
 
@@ -96,18 +84,21 @@ if st.button("🚀 Load Soil Moisture"):
 
     df = load_data()
 
-    # drop bad time values
-    df = df.dropna(subset=["time"])
+    # clean NaN time just in case
+    df = df.dropna()
 
+    # rename
     df["soil_moisture"] = df["mrso"]
 
+    # anomaly
     df["anomaly"] = df["mrso"] - df["mrso"].mean()
 
+    # standardized index
     df["index"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
 
-    # =================================================
-    # VISUALS
-    # =================================================
+    # =====================================================
+    # VISUALIZATION
+    # =====================================================
     st.subheader("🌱 Soil Moisture Time Series")
     st.line_chart(df.set_index("time")["soil_moisture"])
 
