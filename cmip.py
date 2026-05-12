@@ -9,7 +9,7 @@ from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (%) - FIXED TIME STABLE")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (%) - NORMALIZED")
 
 # =========================
 # DATA URL
@@ -31,7 +31,7 @@ def download_file():
     return LOCAL_FILE
 
 # =========================
-# SIDEBAR REGION
+# REGION
 # =========================
 st.sidebar.header("📍 Ethiopia Region")
 
@@ -41,9 +41,9 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# MAP (optional visual only)
+# MAP (OPTIONAL)
 # =========================
-st.subheader("🗺️ Selected Region")
+st.subheader("🗺️ Region")
 
 m = folium.Map(location=[8.5, 40], zoom_start=5)
 
@@ -57,30 +57,24 @@ folium.Rectangle(
 st_folium(m, width=700, height=400)
 
 # =========================
-# LOAD DATA (FIXED TIME SAFE)
+# LOAD DATA
 # =========================
 @st.cache_data
 def load_data():
     file_path = download_file()
 
-    # decode_times=True lets xarray handle CMIP6 time properly
-    ds = xr.open_dataset(file_path, decode_times=True)
+    ds = xr.open_dataset(file_path, decode_times=False)
 
     da = ds["mrso"]
 
-    # subset Ethiopia
-    da = da.sel(
-        lon=slice(min_lon, max_lon),
-        lat=slice(min_lat, max_lat)
-    )
+    da = da.sel(lon=slice(min_lon, max_lon),
+                lat=slice(min_lat, max_lat))
 
-    # spatial mean
     da = da.mean(dim=["lat", "lon"])
 
-    # convert to dataframe
     df = da.to_dataframe().reset_index()
 
-    # SAFE TIME FIX (critical)
+    # ✅ FIXED TIME HANDLING ONLY
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
 
     return df
@@ -88,29 +82,28 @@ def load_data():
 # =========================
 # RUN
 # =========================
-if st.button("🚀 Load Soil Moisture"):
+if st.button("🚀 Load Soil Moisture %"):
 
     st.info("Processing CMIP6 soil moisture...")
 
     df = load_data()
 
-    # clean bad time rows
+    # clean time
+    df = df.dropna()
     df = df.dropna(subset=["time"])
 
     # =========================
-    # PHYSICAL CONVERSION
+    # 🔥 NORMALIZATION TO %
     # =========================
-    mrso = df["mrso"]
+    vmin = df["mrso"].min()
+    vmax = df["mrso"].max()
 
-    # convert to pseudo %
-    df["soil_moisture_pct"] = (mrso / 1000.0) * 100
-    df["soil_moisture_pct"] = df["soil_moisture_pct"].clip(0, 100)
+    df["soil_moisture_pct"] = (df["mrso"] - vmin) / (vmax - vmin) * 100
 
-    # =========================
-    # ANOMALY + INDEX
-    # =========================
+    # anomaly
     df["anomaly"] = df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
 
+    # index
     df["index"] = (
         df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
     ) / df["soil_moisture_pct"].std()
@@ -125,19 +118,16 @@ if st.button("🚀 Load Soil Moisture"):
     col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
-    # TIME SERIES (FIXED X = TIME)
+    # PLOTS
     # =========================
-    st.subheader("🌱 Soil Moisture Time Series (%)")
+    st.subheader("🌱 Soil Moisture (%)")
     st.line_chart(df.set_index("time")["soil_moisture_pct"])
 
-    st.subheader("📉 Anomaly")
+    st.subheader("📉 Anomaly (%)")
     st.line_chart(df.set_index("time")["anomaly"])
 
     st.subheader("📊 Standardized Index")
     st.line_chart(df.set_index("time")["index"])
 
-    # =========================
-    # TABLE
-    # =========================
     st.subheader("📋 Data")
     st.dataframe(df)
