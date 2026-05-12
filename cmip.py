@@ -1,3 +1,4 @@
+this is right only time left
 import streamlit as st
 import xarray as xr
 import numpy as np
@@ -9,7 +10,7 @@ from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED SCIENCE VERSION")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (%) - NORMALIZED")
 
 # =========================
 # DATA URL
@@ -41,7 +42,7 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# MAP (OPTIONAL ONLY)
+# MAP (OPTIONAL)
 # =========================
 st.subheader("🗺️ Region")
 
@@ -57,84 +58,79 @@ folium.Rectangle(
 st_folium(m, width=700, height=400)
 
 # =========================
-# LOAD DATA (FIXED TIME HANDLING)
+# LOAD DATA
 # =========================
 @st.cache_data
 def load_data():
-
     file_path = download_file()
 
-    # IMPORTANT: keep raw time
-    ds = xr.open_dataset(file_path, decode_times=True)
+    ds = xr.open_dataset(file_path, decode_times=False)
 
     da = ds["mrso"]
 
-    # subset
-    da = da.sel(
-        lon=slice(min_lon, max_lon),
-        lat=slice(min_lat, max_lat)
-    )
+    da = da.sel(lon=slice(min_lon, max_lon),
+                lat=slice(min_lat, max_lat))
 
-    # spatial mean (correct)
     da = da.mean(dim=["lat", "lon"])
 
-    # convert to dataframe
+    time = ds["time"].values
+
     df = da.to_dataframe().reset_index()
-
-    # force correct time column
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")
-
-    df = df.dropna(subset=["time", "mrso"])
+    df["time"] = time
 
     return df
 
 # =========================
 # RUN
 # =========================
-if st.button("🚀 Load Soil Moisture"):
+if st.button("🚀 Load Soil Moisture %"):
 
     st.info("Processing CMIP6 soil moisture...")
 
     df = load_data()
 
-    # =========================
-    # REAL SCIENCE NORMALIZATION (NOT PERCENT)
-    # =========================
-    mean = df["mrso"].mean()
-    std = df["mrso"].std()
+    # clean time
+    df = df.dropna()
 
-    df["anomaly"] = df["mrso"] - mean
-    df["index"] = (df["mrso"] - mean) / std
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time"])
 
-    # optional: rescale for visualization ONLY (not real %)
-    df["scaled_0_100"] = (
-        (df["mrso"] - df["mrso"].min()) /
-        (df["mrso"].max() - df["mrso"].min())
-    ) * 100
+    # =========================
+    # 🔥 NORMALIZATION TO %
+    # =========================
+    vmin = df["mrso"].min()
+    vmax = df["mrso"].max()
+
+    df["soil_moisture_pct"] = (df["mrso"] - vmin) / (vmax - vmin) * 100
+
+    # anomaly
+    df["anomaly"] = df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
+
+    # index
+    df["index"] = (
+        df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
+    ) / df["soil_moisture_pct"].std()
 
     # =========================
     # METRICS
     # =========================
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Mean (kg/m²)", f"{mean:.2f}")
-    col2.metric("Min", f"{df['mrso'].min():.2f}")
-    col3.metric("Max", f"{df['mrso'].max():.2f}")
+    col1.metric("Mean Soil Moisture %", f"{df['soil_moisture_pct'].mean():.2f}%")
+    col2.metric("Min %", f"{df['soil_moisture_pct'].min():.2f}%")
+    col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
-    # TIME SERIES (FIXED)
+    # PLOTS
     # =========================
-    st.subheader("🌱 Soil Moisture Time Series (kg/m²)")
-    st.line_chart(df.set_index("time")["mrso"])
+    st.subheader("🌱 Soil Moisture (%)")
+    st.line_chart(df.set_index("time")["soil_moisture_pct"])
 
-    st.subheader("📉 Anomaly")
+    st.subheader("📉 Anomaly (%)")
     st.line_chart(df.set_index("time")["anomaly"])
 
-    st.subheader("📊 Standardized Index (Drought Signal)")
+    st.subheader("📊 Standardized Index")
     st.line_chart(df.set_index("time")["index"])
-
-    st.subheader("📊 Scaled Visualization (NOT REAL %)")
-    st.line_chart(df.set_index("time")["scaled_0_100"])
 
     st.subheader("📋 Data")
     st.dataframe(df)
