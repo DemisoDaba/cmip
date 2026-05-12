@@ -4,14 +4,15 @@ import numpy as np
 import pandas as pd
 import os
 import requests
-import cftime
+import folium
+from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - CORRECT INTERPRETATION")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED + DASHBOARD")
 
 # =========================
-# DATA SOURCE
+# DATA URL
 # =========================
 URL = "http://noresg.nird.sigma2.no/thredds/fileServer/esg_dataroot/cmor/CMIP6/ScenarioMIP/NCC/NorESM2-MM/ssp245/r2i1p1f1/day/mrso/gn/v20200702/mrso_day_NorESM2-MM_ssp245_r2i1p1f1_gn_20141231-20201231.nc"
 
@@ -25,49 +26,67 @@ def download_file():
         st.info("⬇️ Downloading CMIP6 file...")
         r = requests.get(URL, stream=True)
         with open(LOCAL_FILE, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1024 * 1024):
+            for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
     return LOCAL_FILE
 
 # =========================
-# LOAD DATA
+# SIDEBAR CONTROLS
+# =========================
+st.sidebar.header("📍 Ethiopia Region")
+
+min_lon = st.sidebar.number_input("Min Lon", 33.0)
+max_lon = st.sidebar.number_input("Max Lon", 48.0)
+min_lat = st.sidebar.number_input("Min Lat", 3.0)
+max_lat = st.sidebar.number_input("Max Lat", 15.0)
+
+# =========================
+# MAP VIEW (NEW)
+# =========================
+st.subheader("🗺️ Selected Region Map")
+
+m = folium.Map(location=[8.5, 40], zoom_start=5)
+
+folium.Rectangle(
+    bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+    color="blue",
+    fill=True,
+    fill_opacity=0.2
+).add_to(m)
+
+st_folium(m, width=700, height=400)
+
+# =========================
+# LOAD DATA (FIXED TIME)
 # =========================
 @st.cache_data
 def load_data():
-
     file_path = download_file()
 
     ds = xr.open_dataset(file_path, decode_times=False)
 
     da = ds["mrso"]
 
-    # Ethiopia subset
-    da = da.sel(lon=slice(33, 48),
-                lat=slice(3, 15))
+    # subset
+    da = da.sel(lon=slice(min_lon, max_lon),
+                lat=slice(min_lat, max_lat))
 
     # spatial mean
     da = da.mean(dim=["lat", "lon"])
 
-    # =========================
-    # FIX TIME PROPERLY (CMIP6 SAFE)
-    # =========================
     time_var = ds["time"]
 
+    import cftime
     units = time_var.attrs.get("units", "days since 1850-01-01")
     calendar = time_var.attrs.get("calendar", "noleap")
 
-    times = cftime.num2date(
-        time_var.values,
-        units=units,
-        calendar=calendar
-    )
-
-    da = da.assign_coords(time=times)
+    try:
+        times = cftime.num2date(time_var.values, units=units, calendar=calendar)
+        da = da.assign_coords(time=times)
+    except:
+        da = da.assign_coords(time=pd.to_datetime(time_var.values, errors="coerce"))
 
     df = da.to_dataframe().reset_index()
-
-    # force clean datetime
-    df["time"] = pd.to_datetime(df["time"])
 
     return df
 
@@ -83,104 +102,53 @@ if st.button("🚀 Load Soil Moisture"):
     # clean
     df = df.dropna(subset=["time"])
 
-    # =========================
-    # CORRECT PHYSICAL INTERPRETATION
-    # =========================
-
-    # raw CMIP6 unit: kg/m² = mm water equivalent
-    df["soil_moisture_mm"] = df["mrso"]
-
-    # convert to meters (clear interpretation)
-    df["soil_moisture_m"] = df["mrso"] / 1000
+    df["soil_moisture"] = df["mrso"]
+    df["anomaly"] = df["mrso"] - df["mrso"].mean()
+    df["index"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
 
     # =========================
-    # CLIMATOLOGY ANOMALY (REAL SCIENCE)
-    # =========================
-    clim = df.groupby(df["time"].dt.month)["mrso"].mean()
-    df["climatology"] = df["time"].dt.month.map(clim)
-
-    df["anomaly"] = df["mrso"] - df["climatology"]
-
-    # =========================
-    # STANDARDIZED SOIL MOISTURE INDEX (SSI)
-    # =========================
-    mean = df["mrso"].mean()
-    std = df["mrso"].std()
-
-    df["ssi"] = (df["mrso"] - mean) / std
-
-    # =========================
-    # DROUGHT CLASSIFICATION
-    # =========================
-    def classify(x):
-        if x <= -2:
-            return "Extreme Drought"
-        elif x <= -1:
-            return "Moderate Drought"
-        elif x < 1:
-            return "Normal"
-        elif x < 2:
-            return "Wet"
-        else:
-            return "Very Wet"
-
-    df["condition"] = df["ssi"].apply(classify)
-
-    # =========================
-    # SMOOTHED STRESS
-    # =========================
-    df["stress_index"] = df["ssi"].rolling(7).mean()
-
-    # =========================
-    # DASHBOARD
+    # DASHBOARD METRICS (NEW)
     # =========================
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Mean (mm)", f"{df['soil_moisture_mm'].mean():.1f}")
-    col2.metric("Min", f"{df['soil_moisture_mm'].min():.1f}")
-    col3.metric("Max", f"{df['soil_moisture_mm'].max():.1f}")
+    col1.metric("Mean Soil Moisture", f"{df['soil_moisture'].mean():.3f}")
+    col2.metric("Min", f"{df['soil_moisture'].min():.3f}")
+    col3.metric("Max", f"{df['soil_moisture'].max():.3f}")
 
     # =========================
-    # TIME DEBUG (IMPORTANT)
+    # SMOOTHED DROUGHT SIGNAL (NEW)
     # =========================
-    st.write("🕒 Time check (first 10 rows)")
-    st.dataframe(df[["time", "mrso"]].head(10))
+    df["rolling_index"] = df["index"].rolling(7).mean()
 
     # =========================
     # PLOTS
     # =========================
-    st.subheader("🌱 Soil Moisture (mm water equivalent)")
-    st.line_chart(df.set_index("time")["soil_moisture_mm"])
+    st.subheader("🌱 Soil Moisture Time Series")
+    st.line_chart(df.set_index("time")["soil_moisture"])
 
     st.subheader("📉 Anomaly")
     st.line_chart(df.set_index("time")["anomaly"])
 
-    st.subheader("📊 Standardized Soil Moisture Index (SSI)")
-    st.line_chart(df.set_index("time")["ssi"])
+    st.subheader("📊 Standardized Index")
+    st.line_chart(df.set_index("time")["index"])
 
-    st.subheader("🌾 Agricultural Stress (smoothed)")
-    st.line_chart(df.set_index("time")["stress_index"])
-
-    # =========================
-    # DROUGHT TABLE
-    # =========================
-    st.subheader("📊 Drought Classification")
-    st.dataframe(df[["time", "mrso", "ssi", "condition"]])
+    st.subheader("📉 Smoothed Drought Signal (7-day)")
+    st.line_chart(df.set_index("time")["rolling_index"])
 
     # =========================
-    # DOWNLOAD
+    # DOWNLOAD (NEW)
     # =========================
     csv = df.to_csv(index=False).encode("utf-8")
 
     st.download_button(
         label="📥 Download CSV",
         data=csv,
-        file_name="cmip6_mrso_ethiopia.csv",
+        file_name="mrso_ethiopia.csv",
         mime="text/csv"
     )
 
-# =========================
-# FOOTER
-# =========================
-st.markdown("---")
-st.markdown("🌍 CMIP6 Ethiopia Soil Moisture Tool | Correct CMIP6 Interpretation")
+    # =========================
+    # TABLE
+    # =========================
+    st.subheader("📋 Data")
+    st.dataframe(df)
