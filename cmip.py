@@ -6,16 +6,19 @@ import pandas as pd
 
 st.set_page_config(page_title="CMIP6 Ethiopia Climate Tool", layout="wide")
 
-st.title("🌍 CMIP6 Climate Analysis Tool – Ethiopia (STABLE AUTO VERSION)")
+st.title("🌍 CMIP6 Climate Analysis Tool – Ethiopia (CLEAN VERSION)")
 
 # =====================================================
 # 1. INPUTS
 # =====================================================
 st.sidebar.header("🧠 Configuration")
 
-variable = st.sidebar.selectbox("Variable", ["pr", "tasmax", "tasmin"])
+variable = st.sidebar.selectbox("Variable (ONLY ONE)", ["pr", "tasmax", "tasmin"])
 experiment = st.sidebar.selectbox("Experiment", ["historical", "ssp245", "ssp585"])
 
+# =====================================================
+# 2. MODEL LIST
+# =====================================================
 fallback_models = [
     "MPI-ESM1-2-LR",
     "EC-Earth3",
@@ -26,9 +29,6 @@ fallback_models = [
     "UKESM1-0-LL"
 ]
 
-# =====================================================
-# 2. SAFE MODEL FETCH
-# =====================================================
 def get_models(var, exp):
     try:
         url = (
@@ -57,30 +57,37 @@ model = st.sidebar.selectbox("CMIP6 Model", models)
 st.sidebar.success(f"Selected: {model}")
 
 # =====================================================
-# 3. ETHIOPIA BOUNDING BOX
+# 3. ETHIOPIA REGION
 # =====================================================
 st.sidebar.header("📍 Ethiopia Region")
 
-min_lon = st.sidebar.number_input("Min Longitude", value=33.0)
-max_lon = st.sidebar.number_input("Max Longitude", value=48.0)
-min_lat = st.sidebar.number_input("Min Latitude", value=3.0)
-max_lat = st.sidebar.number_input("Max Latitude", value=15.0)
+min_lon = st.sidebar.number_input("Min Lon", value=33.0)
+max_lon = st.sidebar.number_input("Max Lon", value=48.0)
+min_lat = st.sidebar.number_input("Min Lat", value=3.0)
+max_lat = st.sidebar.number_input("Max Lat", value=15.0)
 
 # =====================================================
-# 4. 🔥 FIXED DATA FINDER (REALISTIC APPROACH)
+# 4. DATE SELECTION (BEFORE RUN)
 # =====================================================
-def find_working_dataset(model, variable, experiment):
-    """
-    Instead of broken file search, we use dataset-level search
-    and fallback to known stable CMIP6 pattern.
-    """
+st.sidebar.header("📅 Time Period")
 
+start_year = st.sidebar.number_input("Start Year", value=1990)
+end_year = st.sidebar.number_input("End Year", value=2000)
+
+start_date = f"{start_year}-01-01"
+end_date = f"{end_year}-12-31"
+
+# =====================================================
+# 5. SAFE DATA FINDER
+# =====================================================
+def find_dataset_url(model, variable, experiment):
     try:
         search_url = (
             "https://esgf-node.llnl.gov/esg-search/search/"
-            f"?type=Dataset&source_id={model}"
-            f"&variable={variable}&experiment_id={experiment}"
-            f"&format=json&limit=5"
+            f"?type=File&source_id={model}"
+            f"&variable={variable}"
+            f"&experiment_id={experiment}"
+            f"&format=json&limit=1"
         )
 
         r = requests.get(search_url, timeout=15)
@@ -88,27 +95,16 @@ def find_working_dataset(model, variable, experiment):
 
         docs = data.get("response", {}).get("docs", [])
 
-        # Try real URLs first
-        for d in docs:
-            urls = d.get("url", [])
-            if isinstance(urls, list) and len(urls) > 0:
-                return urls[0]
+        if len(docs) == 0:
+            return None
 
-        # fallback CMIP6 known working pattern
-        st.warning("⚠️ Using fallback CMIP6 dataset pattern")
-
-        return (
-            "http://esgf-data.dkrz.de/thredds/dodsC/CMIP6/CMIP/"
-            f"MPI-M/MPI-ESM1-2-LR/{experiment}/r1i1p1f1/day/"
-            f"{variable}/gn/v20190710/"
-            f"{variable}_day_MPI-ESM1-2-LR_{experiment}_r1i1p1f1_gn_18500101-18691231.nc"
-        )
+        return docs[0].get("url", None)
 
     except:
         return None
 
 # =====================================================
-# 5. LOAD DATA
+# 6. LOAD DATA
 # =====================================================
 @st.cache_data
 def load_data(url, var):
@@ -127,16 +123,16 @@ def load_data(url, var):
     return df
 
 # =====================================================
-# 6. RUN PIPELINE
+# 7. RUN PIPELINE
 # =====================================================
-if st.button("🚀 Run CMIP6 Analysis Automatically"):
+if st.button("🚀 Run CMIP6 Analysis"):
 
     st.info("🔍 Searching CMIP6 dataset...")
 
-    url = find_working_dataset(model, variable, experiment)
+    url = find_dataset_url(model, variable, experiment)
 
     if url is None:
-        st.error("❌ No dataset available")
+        st.error("❌ No dataset found")
         st.stop()
 
     st.success("✅ Dataset found!")
@@ -144,26 +140,17 @@ if st.button("🚀 Run CMIP6 Analysis Automatically"):
 
     df = load_data(url, variable)
 
+    # time column
     time_col = df.columns[0]
     df[time_col] = pd.to_datetime(df[time_col])
 
     # =================================================
-    # 7. TIME SELECTION
+    # FILTER BY USER DATE (NEW FIX)
     # =================================================
-    st.subheader("⏱️ Time Selection")
-
-    start_time, end_time = st.slider(
-        "Select Time Range",
-        min_value=df[time_col].min().to_pydatetime(),
-        max_value=df[time_col].max().to_pydatetime(),
-        value=(df[time_col].min().to_pydatetime(),
-               df[time_col].max().to_pydatetime())
-    )
-
-    df = df[(df[time_col] >= start_time) & (df[time_col] <= end_time)]
+    df = df[(df[time_col] >= start_date) & (df[time_col] <= end_date)]
 
     # =================================================
-    # 8. PHYSICS
+    # PHYSICS
     # =================================================
     if variable == "pr":
         df["value"] = df[variable] * 86400
@@ -171,12 +158,12 @@ if st.button("🚀 Run CMIP6 Analysis Automatically"):
         df["value"] = df[variable] - 273.15
 
     # =================================================
-    # 9. SPI
+    # SPI INDEX
     # =================================================
     df["SPI"] = (df[variable] - df[variable].mean()) / df[variable].std()
 
     # =================================================
-    # 10. VISUALIZATION
+    # VISUALIZATION
     # =================================================
     st.subheader("📈 Time Series")
     st.line_chart(df.set_index(time_col)["value"])
@@ -191,4 +178,4 @@ if st.button("🚀 Run CMIP6 Analysis Automatically"):
 # FOOTER
 # =====================================================
 st.markdown("---")
-st.markdown("🌍 CMIP6 Ethiopia Climate Tool | Stable Auto System")
+st.markdown("🌍 CMIP6 Ethiopia Climate Tool | Clean Auto Version")
