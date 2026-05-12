@@ -9,7 +9,7 @@ from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED + DASHBOARD")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (%) - NORMALIZED")
 
 # =========================
 # DATA URL
@@ -31,7 +31,7 @@ def download_file():
     return LOCAL_FILE
 
 # =========================
-# SIDEBAR CONTROLS
+# REGION
 # =========================
 st.sidebar.header("📍 Ethiopia Region")
 
@@ -41,9 +41,9 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# MAP VIEW (NEW)
+# MAP (OPTIONAL)
 # =========================
-st.subheader("🗺️ Selected Region Map")
+st.subheader("🗺️ Region")
 
 m = folium.Map(location=[8.5, 40], zoom_start=5)
 
@@ -57,7 +57,7 @@ folium.Rectangle(
 st_folium(m, width=700, height=400)
 
 # =========================
-# LOAD DATA (FIXED TIME)
+# LOAD DATA
 # =========================
 @st.cache_data
 def load_data():
@@ -67,88 +67,69 @@ def load_data():
 
     da = ds["mrso"]
 
-    # subset
     da = da.sel(lon=slice(min_lon, max_lon),
                 lat=slice(min_lat, max_lat))
 
-    # spatial mean
     da = da.mean(dim=["lat", "lon"])
 
-    time_var = ds["time"]
-
-    import cftime
-    units = time_var.attrs.get("units", "days since 1850-01-01")
-    calendar = time_var.attrs.get("calendar", "noleap")
-
-    try:
-        times = cftime.num2date(time_var.values, units=units, calendar=calendar)
-        da = da.assign_coords(time=times)
-    except:
-        da = da.assign_coords(time=pd.to_datetime(time_var.values, errors="coerce"))
+    time = ds["time"].values
 
     df = da.to_dataframe().reset_index()
+    df["time"] = time
 
     return df
 
 # =========================
 # RUN
 # =========================
-if st.button("🚀 Load Soil Moisture"):
+if st.button("🚀 Load Soil Moisture %"):
 
-    st.info("🔍 Processing CMIP6 soil moisture (mrso)...")
+    st.info("Processing CMIP6 soil moisture...")
 
     df = load_data()
 
-    # clean
+    # clean time
+    df = df.dropna()
+
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
 
-    df["soil_moisture"] = df["mrso"]
-    df["anomaly"] = df["mrso"] - df["mrso"].mean()
-    df["index"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
+    # =========================
+    # 🔥 NORMALIZATION TO %
+    # =========================
+    vmin = df["mrso"].min()
+    vmax = df["mrso"].max()
+
+    df["soil_moisture_pct"] = (df["mrso"] - vmin) / (vmax - vmin) * 100
+
+    # anomaly
+    df["anomaly"] = df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
+
+    # index
+    df["index"] = (
+        df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
+    ) / df["soil_moisture_pct"].std()
 
     # =========================
-    # DASHBOARD METRICS (NEW)
+    # METRICS
     # =========================
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Mean Soil Moisture", f"{df['soil_moisture'].mean():.3f}")
-    col2.metric("Min", f"{df['soil_moisture'].min():.3f}")
-    col3.metric("Max", f"{df['soil_moisture'].max():.3f}")
-
-    # =========================
-    # SMOOTHED DROUGHT SIGNAL (NEW)
-    # =========================
-    df["rolling_index"] = df["index"].rolling(7).mean()
+    col1.metric("Mean Soil Moisture %", f"{df['soil_moisture_pct'].mean():.2f}%")
+    col2.metric("Min %", f"{df['soil_moisture_pct'].min():.2f}%")
+    col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
     # PLOTS
     # =========================
-    st.subheader("🌱 Soil Moisture Time Series")
-    st.line_chart(df.set_index("time")["soil_moisture"])
+    st.subheader("🌱 Soil Moisture (%)")
+    st.line_chart(df.set_index("time")["soil_moisture_pct"])
 
-    st.subheader("📉 Anomaly")
+    st.subheader("📉 Anomaly (%)")
     st.line_chart(df.set_index("time")["anomaly"])
 
     st.subheader("📊 Standardized Index")
     st.line_chart(df.set_index("time")["index"])
 
-    st.subheader("📉 Smoothed Drought Signal (7-day)")
-    st.line_chart(df.set_index("time")["rolling_index"])
-
-    # =========================
-    # DOWNLOAD (NEW)
-    # =========================
-    csv = df.to_csv(index=False).encode("utf-8")
-
-    st.download_button(
-        label="📥 Download CSV",
-        data=csv,
-        file_name="mrso_ethiopia.csv",
-        mime="text/csv"
-    )
-
-    # =========================
-    # TABLE
-    # =========================
     st.subheader("📋 Data")
     st.dataframe(df)
