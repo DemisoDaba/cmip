@@ -1,43 +1,104 @@
 import streamlit as st
+import requests
 import xarray as xr
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-st.set_page_config(page_title="Auto CMIP6 Ethiopia Tool", layout="wide")
+st.set_page_config(page_title="CMIP6 Ethiopia Climate Tool", layout="wide")
 
-st.title("🌍 AUTOMATIC CMIP6 Climate Tool – Ethiopia")
+st.title("🌍 CMIP6 Climate Analysis Tool – Ethiopia (AUTO MODE)")
 
 # =====================================================
-# 1. USER INPUTS (NO URL ANYMORE)
+# 1. INPUTS
 # =====================================================
-model = st.selectbox("CMIP6 Model", [
+st.sidebar.header("🧠 Configuration")
+
+variable = st.sidebar.selectbox("Variable", ["pr", "tasmax", "tasmin"])
+experiment = st.sidebar.selectbox("Experiment", ["historical", "ssp245", "ssp585"])
+
+fallback_models = [
     "MPI-ESM1-2-LR",
     "EC-Earth3",
     "NorESM2-LM",
-    "MIROC6"
-])
-
-experiment = st.selectbox("Scenario", ["historical", "ssp245", "ssp585"])
-variable = st.selectbox("Variable", ["pr", "tasmax", "tasmin"])
-
-# Ethiopia bounding box
-min_lon, max_lon = 33, 48
-min_lat, max_lat = 3, 15
-
-st.info("📍 Ethiopia region is fixed for this version")
+    "MIROC6",
+    "GFDL-ESM4",
+    "CNRM-CM6-1",
+    "UKESM1-0-LL"
+]
 
 # =====================================================
-# 2. AUTO CMIP6 URL BUILDER (CORE MAGIC)
+# 2. GET MODELS (SAFE ESGF)
 # =====================================================
-def build_url(model, experiment, variable):
-    # SIMPLE TEMPLATE (works for many CMIP6 datasets)
-    base = "http://esgf-data.dkrz.de/thredds/dodsC/CMIP6/CMIP"
+def get_models(var, exp):
+    try:
+        url = (
+            "https://esgf-node.llnl.gov/esg-search/search/"
+            f"?type=Dataset&variable={var}&experiment_id={exp}&format=json&limit=30"
+        )
 
-    url = f"{base}/{model}/{experiment}/r1i1p1f1/day/{variable}/gn/latest/latest.nc"
-    return url
+        r = requests.get(url, timeout=10)
+
+        if r.status_code != 200:
+            return fallback_models
+
+        data = r.json()
+
+        if "response" not in data:
+            return fallback_models
+
+        docs = data["response"].get("docs", [])
+
+        models = set()
+        for d in docs:
+            if "source_id" in d:
+                models.add(d["source_id"])
+
+        return sorted(list(models)) if models else fallback_models
+
+    except:
+        return fallback_models
+
+models = get_models(variable, experiment)
+model = st.sidebar.selectbox("CMIP6 Model", models)
+
+st.sidebar.success(f"Selected: {model}")
 
 # =====================================================
-# 3. LOAD DATA
+# 3. ETHIOPIA BOUNDING BOX
+# =====================================================
+st.sidebar.header("📍 Ethiopia Region")
+
+min_lon = st.sidebar.number_input("Min Longitude", value=33.0)
+max_lon = st.sidebar.number_input("Max Longitude", value=48.0)
+min_lat = st.sidebar.number_input("Min Latitude", value=3.0)
+max_lat = st.sidebar.number_input("Max Latitude", value=15.0)
+
+# =====================================================
+# 4. AUTO CMIP6 DATA FINDER (IMPORTANT FIX)
+# =====================================================
+def find_dataset_url(model, variable, experiment):
+    try:
+        search_url = (
+            "https://esgf-node.llnl.gov/esg-search/search/"
+            f"?type=File&source_id={model}&variable={variable}"
+            f"&experiment_id={experiment}&format=json&limit=1"
+        )
+
+        r = requests.get(search_url, timeout=15)
+        data = r.json()
+
+        docs = data.get("response", {}).get("docs", [])
+
+        if len(docs) == 0:
+            return None
+
+        return docs[0].get("url", None)
+
+    except:
+        return None
+
+# =====================================================
+# 5. LOAD DATA
 # =====================================================
 @st.cache_data
 def load_data(url, var):
@@ -45,56 +106,80 @@ def load_data(url, var):
 
     data = ds[var]
 
-    # clip Ethiopia
+    # Ethiopia subset
     data = data.sel(
         lon=slice(min_lon, max_lon),
         lat=slice(min_lat, max_lat)
     )
 
-    # spatial mean
     data = data.mean(dim=["lat", "lon"])
 
     df = data.to_dataframe().reset_index()
     return df
 
 # =====================================================
-# 4. RUN PIPELINE
+# 6. RUN PIPELINE (NO USER URL)
 # =====================================================
 if st.button("🚀 Run CMIP6 Analysis Automatically"):
 
-    url = build_url(model, experiment, variable)
+    st.info("🔍 Searching CMIP6 dataset...")
 
-    st.write("🔗 Auto-generated URL:")
+    url = find_dataset_url(model, variable, experiment)
+
+    if url is None:
+        st.error("❌ No dataset found for selected configuration")
+        st.stop()
+
+    st.success("✅ Dataset found!")
     st.code(url)
 
-    try:
-        df = load_data(url, variable)
+    df = load_data(url, variable)
 
-        time_col = df.columns[0]
-        df[time_col] = pd.to_datetime(df[time_col])
+    time_col = df.columns[0]
+    df[time_col] = pd.to_datetime(df[time_col])
 
-        # -----------------------------
-        # TIME SERIES PLOT
-        # -----------------------------
-        st.subheader("📈 Time Series")
+    # =================================================
+    # 7. TIME SELECTION
+    # =================================================
+    st.subheader("⏱️ Time Selection")
 
-        if variable == "pr":
-            df["value"] = df[variable] * 86400
-        else:
-            df["value"] = df[variable] - 273.15
+    start_time, end_time = st.slider(
+        "Select Time Range",
+        min_value=df[time_col].min().to_pydatetime(),
+        max_value=df[time_col].max().to_pydatetime(),
+        value=(df[time_col].min().to_pydatetime(),
+               df[time_col].max().to_pydatetime())
+    )
 
-        st.line_chart(df.set_index(time_col)["value"])
+    df = df[(df[time_col] >= start_time) & (df[time_col] <= end_time)]
 
-        # -----------------------------
-        # SPI INDEX
-        # -----------------------------
-        df["SPI"] = (df[variable] - df[variable].mean()) / df[variable].std()
+    # =================================================
+    # 8. PHYSICS
+    # =================================================
+    if variable == "pr":
+        df["value"] = df[variable] * 86400
+    else:
+        df["value"] = df[variable] - 273.15
 
-        st.subheader("📉 SPI Index")
-        st.line_chart(df.set_index(time_col)["SPI"])
+    # =================================================
+    # 9. SPI INDEX
+    # =================================================
+    df["SPI"] = (df[variable] - df[variable].mean()) / df[variable].std()
 
-        st.success("✅ Analysis Complete")
+    # =================================================
+    # 10. VISUALIZATION
+    # =================================================
+    st.subheader("📈 Time Series")
+    st.line_chart(df.set_index(time_col)["value"])
 
-    except Exception as e:
-        st.error("❌ Data loading failed (CMIP6 file not found or URL invalid)")
-        st.write(str(e))
+    st.subheader("📉 SPI Index")
+    st.line_chart(df.set_index(time_col)["SPI"])
+
+    st.subheader("📊 Data Table")
+    st.dataframe(df)
+
+# =====================================================
+# FOOTER
+# =====================================================
+st.markdown("---")
+st.markdown("🌍 CMIP6 Ethiopia Climate Tool | Fully Automatic Version")
