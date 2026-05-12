@@ -63,7 +63,8 @@ st_folium(m, width=700, height=400)
 def load_data():
     file_path = download_file()
 
-    ds = xr.open_dataset(file_path, decode_times=False)
+    # ✅ FIXED: proper CMIP6 time decoding
+    ds = xr.open_dataset(file_path, decode_times=True, use_cftime=True)
 
     da = ds["mrso"]
 
@@ -76,9 +77,7 @@ def load_data():
 
     df = da.to_dataframe().reset_index()
 
-    # =========================
-    # ✅ FIXED TIME (clean + valid)
-    # =========================
+    # ensure proper datetime
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
 
@@ -94,7 +93,7 @@ if st.button("🚀 Load Soil Moisture %"):
     df = load_data()
 
     # =========================
-    # CLEAN + SORT TIME (IMPORTANT)
+    # FIX TIME ORDER (IMPORTANT)
     # =========================
     df = df.sort_values("time")
 
@@ -113,7 +112,7 @@ if st.button("🚀 Load Soil Moisture %"):
     ) / df["soil_moisture_pct"].std()
 
     # =========================
-    # INDEX TIME FOR PERFECT X-AXIS
+    # TIME INDEX FOR PERFECT X-AXIS
     # =========================
     df = df.set_index("time")
 
@@ -127,7 +126,7 @@ if st.button("🚀 Load Soil Moisture %"):
     col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
 
     # =========================
-    # PERFECT TIME SERIES PLOTS
+    # TIME SERIES PLOTS (FIXED)
     # =========================
     st.subheader("🌱 Soil Moisture (%)")
     st.line_chart(df["soil_moisture_pct"])
