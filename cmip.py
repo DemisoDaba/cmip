@@ -4,10 +4,12 @@ import numpy as np
 import pandas as pd
 import os
 import requests
+import folium
+from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED TIME")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED SCIENCE VERSION")
 
 # =========================
 # DATA URL
@@ -29,7 +31,7 @@ def download_file():
     return LOCAL_FILE
 
 # =========================
-# SIDEBAR
+# REGION
 # =========================
 st.sidebar.header("📍 Ethiopia Region")
 
@@ -39,33 +41,50 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# LOAD DATA (CORRECT FIX)
+# MAP (OPTIONAL ONLY)
+# =========================
+st.subheader("🗺️ Region")
+
+m = folium.Map(location=[8.5, 40], zoom_start=5)
+
+folium.Rectangle(
+    bounds=[[min_lat, min_lon], [max_lat, max_lon]],
+    color="blue",
+    fill=True,
+    fill_opacity=0.2
+).add_to(m)
+
+st_folium(m, width=700, height=400)
+
+# =========================
+# LOAD DATA (FIXED TIME HANDLING)
 # =========================
 @st.cache_data
 def load_data():
+
     file_path = download_file()
 
-    # 🔥 IMPORTANT FIX: decode_times=True (NO manual time hack)
+    # IMPORTANT: keep raw time
     ds = xr.open_dataset(file_path, decode_times=True)
 
     da = ds["mrso"]
 
-    # subset first
+    # subset
     da = da.sel(
         lon=slice(min_lon, max_lon),
         lat=slice(min_lat, max_lat)
     )
 
-    # spatial mean
+    # spatial mean (correct)
     da = da.mean(dim=["lat", "lon"])
 
     # convert to dataframe
     df = da.to_dataframe().reset_index()
 
-    # ensure proper datetime
+    # force correct time column
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
 
-    df = df.dropna(subset=["time"])
+    df = df.dropna(subset=["time", "mrso"])
 
     return df
 
@@ -74,28 +93,21 @@ def load_data():
 # =========================
 if st.button("🚀 Load Soil Moisture"):
 
-    st.info("🔍 Processing CMIP6 soil moisture (mrso)...")
+    st.info("Processing CMIP6 soil moisture...")
 
     df = load_data()
 
-    # sort time (VERY IMPORTANT)
-    df = df.sort_values("time")
-
     # =========================
-    # REAL VALUES
+    # REAL SCIENCE NORMALIZATION (NOT PERCENT)
     # =========================
-    df["soil_moisture"] = df["mrso"]
+    mean = df["mrso"].mean()
+    std = df["mrso"].std()
 
-    # anomaly (correct)
-    df["anomaly"] = df["mrso"] - df["mrso"].mean()
+    df["anomaly"] = df["mrso"] - mean
+    df["index"] = (df["mrso"] - mean) / std
 
-    # standardized index
-    df["index"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
-
-    # =========================
-    # OPTIONAL: NORMALIZED %
-    # =========================
-    df["soil_moisture_pct"] = (
+    # optional: rescale for visualization ONLY (not real %)
+    df["scaled_0_100"] = (
         (df["mrso"] - df["mrso"].min()) /
         (df["mrso"].max() - df["mrso"].min())
     ) * 100
@@ -105,27 +117,24 @@ if st.button("🚀 Load Soil Moisture"):
     # =========================
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Mean (kg/m²)", f"{df['soil_moisture'].mean():.2f}")
-    col2.metric("Min", f"{df['soil_moisture'].min():.2f}")
-    col3.metric("Max", f"{df['soil_moisture'].max():.2f}")
+    col1.metric("Mean (kg/m²)", f"{mean:.2f}")
+    col2.metric("Min", f"{df['mrso'].min():.2f}")
+    col3.metric("Max", f"{df['mrso'].max():.2f}")
 
     # =========================
-    # TIME SERIES (CORRECT)
+    # TIME SERIES (FIXED)
     # =========================
-    st.subheader("🌱 Soil Moisture (Raw)")
-    st.line_chart(df.set_index("time")["soil_moisture"])
-
-    st.subheader("📊 Soil Moisture (%) Normalized")
-    st.line_chart(df.set_index("time")["soil_moisture_pct"])
+    st.subheader("🌱 Soil Moisture Time Series (kg/m²)")
+    st.line_chart(df.set_index("time")["mrso"])
 
     st.subheader("📉 Anomaly")
     st.line_chart(df.set_index("time")["anomaly"])
 
-    st.subheader("📊 Standardized Index")
+    st.subheader("📊 Standardized Index (Drought Signal)")
     st.line_chart(df.set_index("time")["index"])
 
-    # =========================
-    # DATA TABLE
-    # =========================
+    st.subheader("📊 Scaled Visualization (NOT REAL %)")
+    st.line_chart(df.set_index("time")["scaled_0_100"])
+
     st.subheader("📋 Data")
     st.dataframe(df)
