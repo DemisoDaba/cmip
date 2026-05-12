@@ -1,59 +1,91 @@
 import streamlit as st
 import requests
 
-st.title("🌍 Auto CMIP6 Model Discovery")
+st.set_page_config(page_title="CMIP6 Auto Model Tool", layout="wide")
 
+st.title("🌍 CMIP6 Auto Model Discovery (Stable Version)")
+
+# -----------------------------
+# USER INPUT
+# -----------------------------
 variable = st.selectbox("Variable", ["pr", "tasmax", "tasmin"])
 experiment = st.selectbox("Experiment", ["historical", "ssp245", "ssp585"])
 
 # -----------------------------
-# SAFE ESGF SEARCH FUNCTION
+# FALLBACK MODEL LIST (IMPORTANT)
+# -----------------------------
+fallback_models = [
+    "MPI-ESM1-2-LR",
+    "EC-Earth3",
+    "NorESM2-LM",
+    "MIROC6",
+    "GFDL-ESM4",
+    "CNRM-CM6-1",
+    "UKESM1-0-LL"
+]
+
+# -----------------------------
+# ESGF FUNCTION (SAFE)
 # -----------------------------
 def get_models(var, exp):
     try:
         url = (
             "https://esgf-node.llnl.gov/esg-search/search/"
-            f"?type=Dataset&variable={var}&experiment_id={exp}&format=json&limit=100"
+            f"?type=Dataset&variable={var}&experiment_id={exp}&format=json&limit=50"
         )
 
         r = requests.get(url, timeout=10)
 
-        # check if request is valid JSON
+        # if server fails
+        if r.status_code != 200:
+            return fallback_models
+
         try:
             data = r.json()
         except:
-            return ["ESGF returned non-JSON response"]
+            return fallback_models
 
-        # SAFE STRUCTURE CHECK
         if "response" not in data:
-            return ["No response from ESGF"]
+            return fallback_models
 
-        if "docs" not in data["response"]:
-            return ["No datasets found"]
+        docs = data["response"].get("docs", [])
 
         models = set()
 
-        for d in data["response"]["docs"]:
+        for d in docs:
             model = d.get("source_id", None)
             if model:
                 models.add(model)
 
         if len(models) == 0:
-            return ["No models available"]
+            return fallback_models
 
         return sorted(list(models))
 
-    except Exception as e:
-        return [f"Error: {str(e)}"]
+    except:
+        return fallback_models
 
 # -----------------------------
-# RUN
+# RUN APP
 # -----------------------------
-if st.button("🔍 Find Available Models"):
+if st.button("🔍 Find CMIP6 Models"):
     models = get_models(variable, experiment)
 
-    st.subheader("📦 Auto-Detected CMIP6 Models")
+    st.subheader("📦 Available Models")
+
     st.write(models)
 
-    if models and "Error" not in models[0]:
-        model = st.selectbox("Select Model", models)
+    model = st.selectbox("Select Model", models)
+
+    st.success(f"Selected Model: {model}")
+
+# -----------------------------
+# INFO SECTION
+# -----------------------------
+st.markdown("---")
+st.markdown("""
+### 🌍 How this works
+- First tries live ESGF database  
+- If ESGF fails → uses safe fallback models  
+- Ensures app never crashes  
+""")
