@@ -4,12 +4,10 @@ import numpy as np
 import pandas as pd
 import os
 import requests
-import folium
-from streamlit_folium import st_folium
 
 st.set_page_config(page_title="CMIP6 Soil Moisture Ethiopia", layout="wide")
 
-st.title("🌍 CMIP6 Ethiopia Soil Moisture (%) - NORMALIZED")
+st.title("🌍 CMIP6 Ethiopia Soil Moisture (mrso) - FIXED TIME")
 
 # =========================
 # DATA URL
@@ -31,7 +29,7 @@ def download_file():
     return LOCAL_FILE
 
 # =========================
-# REGION
+# SIDEBAR
 # =========================
 st.sidebar.header("📍 Ethiopia Region")
 
@@ -41,95 +39,93 @@ min_lat = st.sidebar.number_input("Min Lat", 3.0)
 max_lat = st.sidebar.number_input("Max Lat", 15.0)
 
 # =========================
-# MAP (OPTIONAL)
-# =========================
-st.subheader("🗺️ Region")
-
-m = folium.Map(location=[8.5, 40], zoom_start=5)
-
-folium.Rectangle(
-    bounds=[[min_lat, min_lon], [max_lat, max_lon]],
-    color="blue",
-    fill=True,
-    fill_opacity=0.2
-).add_to(m)
-
-st_folium(m, width=700, height=400)
-
-# =========================
-# LOAD DATA
+# LOAD DATA (CORRECT FIX)
 # =========================
 @st.cache_data
 def load_data():
     file_path = download_file()
 
-    ds = xr.open_dataset(file_path, decode_times=False)
+    # 🔥 IMPORTANT FIX: decode_times=True (NO manual time hack)
+    ds = xr.open_dataset(file_path, decode_times=True)
 
     da = ds["mrso"]
 
-    da = da.sel(lon=slice(min_lon, max_lon),
-                lat=slice(min_lat, max_lat))
+    # subset first
+    da = da.sel(
+        lon=slice(min_lon, max_lon),
+        lat=slice(min_lat, max_lat)
+    )
 
+    # spatial mean
     da = da.mean(dim=["lat", "lon"])
 
-    time = ds["time"].values
-
+    # convert to dataframe
     df = da.to_dataframe().reset_index()
-    df["time"] = time
+
+    # ensure proper datetime
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+
+    df = df.dropna(subset=["time"])
 
     return df
 
 # =========================
 # RUN
 # =========================
-if st.button("🚀 Load Soil Moisture %"):
+if st.button("🚀 Load Soil Moisture"):
 
-    st.info("Processing CMIP6 soil moisture...")
+    st.info("🔍 Processing CMIP6 soil moisture (mrso)...")
 
     df = load_data()
 
-    # clean time
-    df = df.dropna()
-
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")
-    df = df.dropna(subset=["time"])
+    # sort time (VERY IMPORTANT)
+    df = df.sort_values("time")
 
     # =========================
-    # 🔥 NORMALIZATION TO %
+    # REAL VALUES
     # =========================
-    vmin = df["mrso"].min()
-    vmax = df["mrso"].max()
+    df["soil_moisture"] = df["mrso"]
 
-    df["soil_moisture_pct"] = (df["mrso"] - vmin) / (vmax - vmin) * 100
+    # anomaly (correct)
+    df["anomaly"] = df["mrso"] - df["mrso"].mean()
 
-    # anomaly
-    df["anomaly"] = df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
+    # standardized index
+    df["index"] = (df["mrso"] - df["mrso"].mean()) / df["mrso"].std()
 
-    # index
-    df["index"] = (
-        df["soil_moisture_pct"] - df["soil_moisture_pct"].mean()
-    ) / df["soil_moisture_pct"].std()
+    # =========================
+    # OPTIONAL: NORMALIZED %
+    # =========================
+    df["soil_moisture_pct"] = (
+        (df["mrso"] - df["mrso"].min()) /
+        (df["mrso"].max() - df["mrso"].min())
+    ) * 100
 
     # =========================
     # METRICS
     # =========================
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Mean Soil Moisture %", f"{df['soil_moisture_pct'].mean():.2f}%")
-    col2.metric("Min %", f"{df['soil_moisture_pct'].min():.2f}%")
-    col3.metric("Max %", f"{df['soil_moisture_pct'].max():.2f}%")
+    col1.metric("Mean (kg/m²)", f"{df['soil_moisture'].mean():.2f}")
+    col2.metric("Min", f"{df['soil_moisture'].min():.2f}")
+    col3.metric("Max", f"{df['soil_moisture'].max():.2f}")
 
     # =========================
-    # PLOTS
+    # TIME SERIES (CORRECT)
     # =========================
-    st.subheader("🌱 Soil Moisture (%)")
+    st.subheader("🌱 Soil Moisture (Raw)")
+    st.line_chart(df.set_index("time")["soil_moisture"])
+
+    st.subheader("📊 Soil Moisture (%) Normalized")
     st.line_chart(df.set_index("time")["soil_moisture_pct"])
 
-    st.subheader("📉 Anomaly (%)")
+    st.subheader("📉 Anomaly")
     st.line_chart(df.set_index("time")["anomaly"])
 
     st.subheader("📊 Standardized Index")
     st.line_chart(df.set_index("time")["index"])
 
+    # =========================
+    # DATA TABLE
+    # =========================
     st.subheader("📋 Data")
     st.dataframe(df)
